@@ -1,0 +1,11 @@
+[package]
+name = "rust_bpe_optimizer" # Rust crate 的名字
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_bpe_optimizer" # 输出的库文件名
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.21.0", features = ["extension-module"] }
