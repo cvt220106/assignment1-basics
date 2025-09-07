@@ -4,6 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rust_bpe_optimizer" # 这是 Python import 时使用的包名
+version = "0.1.0"
 requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Rust",

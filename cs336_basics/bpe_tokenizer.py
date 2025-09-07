@@ -255,7 +255,7 @@ def train_bpe(
     print(f"[{get_time_string()}] Starting parallel pre-tokenization to get word counts...")
     special_tokens_pattern = "|".join(re.escape(st) for st in special_tokens)
     doc_end_token = b"<|endoftext|>"
-    num_processes = 16
+    num_processes = int(os.getenv("cpu", 16))
 
     chunks_data = []
     with open(input_path, "rb") as f:

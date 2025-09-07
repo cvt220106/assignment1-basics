@@ -2,6 +2,7 @@ import time
 import json
 import os
 import psutil
+import pickle
 from typing import Dict, List, Tuple
 
 # 假设您的 bpe_tokenizer 模块位于 cs336_basics 包中
@@ -9,17 +10,17 @@ from cs336_basics.bpe_tokenizer import train_bpe
 
 # --- 1. 配置 ---
 # !!! 重要: 请将此路径修改为您本地 TinyStories 数据集的实际路径 !!!
-DATASET_PATH = 'data/TinyStoriesV2-GPT4-train.txt'
+DATASET_PATH = '../data/TinyStoriesV2-GPT4-train.txt'
 VOCAB_SIZE = 10000
 # DATASET_PATH = 'data/owt_train.txt'
 # VOCAB_SIZE = 32000
 SPECIAL_TOKENS = ["<|endoftext|>"]
 
 # 输出文件路径
-OUTPUT_DIR = "bpe_training_results"
+OUTPUT_DIR = "../bpe_training_results"
 PREFIX = DATASET_PATH.split("/")[-1].split(".")[0]
-OUTPUT_VOCAB_PATH = os.path.join(OUTPUT_DIR, f"{PREFIX}_vocab.json")
-OUTPUT_MERGES_PATH = os.path.join(OUTPUT_DIR, "merges.json")
+OUTPUT_VOCAB_PATH = os.path.join(OUTPUT_DIR, f"{PREFIX}_vocab")
+OUTPUT_MERGES_PATH = os.path.join(OUTPUT_DIR, f"{PREFIX}_merges")
 
 
 def serialize_vocab(vocab: Dict[int, bytes]) -> Dict[str, List[int]]:
@@ -72,13 +73,19 @@ def main():
     # --- 结果序列化 ---
     print(f"正在将词汇表保存到: {OUTPUT_VOCAB_PATH}")
     serializable_vocab = serialize_vocab(final_vocab)
-    with open(OUTPUT_VOCAB_PATH, 'w', encoding='utf-8') as f:
+    with open(OUTPUT_VOCAB_PATH + ".json", 'w', encoding='utf-8') as f:
         json.dump(serializable_vocab, f, indent=2)
 
     print(f"正在将合并规则保存到: {OUTPUT_MERGES_PATH}")
     serializable_merges = serialize_merges(final_merges)
-    with open(OUTPUT_MERGES_PATH, 'w', encoding='utf-8') as f:
+    with open(OUTPUT_MERGES_PATH + ".json", 'w', encoding='utf-8') as f:
         json.dump(serializable_merges, f)
+
+    # 也保存为 pickle 格式以便后续加载
+    with open(OUTPUT_VOCAB_PATH + ".pkl", 'wb') as f:
+        pickle.dump(serializable_vocab, f)
+    with open(OUTPUT_MERGES_PATH + ".pkl", 'wb') as f:
+        pickle.dump(final_merges, f)
     print("结果保存完毕。")
 
     # --- 结果分析 ---
