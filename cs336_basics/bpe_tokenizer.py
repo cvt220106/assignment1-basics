@@ -2,10 +2,12 @@ import collections
 import regex as re
 import multiprocessing
 import os
+import time
+import datetime
 from typing import BinaryIO, Counter as CounterType, Tuple, Dict, List
 
 try:
-    from rust_bpe_optimizer import merge_word_counts_and_update_stats_rust
+    from rust_bpe_optimizer import train_bpe_with_rust
     RUST_AVAILABLE = True
     print("🚀 Successfully imported Rust optimizer!")
 except ImportError:
@@ -98,14 +100,35 @@ def process_chunk_for_counts(
     text = chunk_bytes.decode('utf-8', errors='replace')
 
     word_counts = collections.Counter()
-    # First, split the chunk by ALL special tokens to prevent merges across them
-    sub_chunks = re.split(special_tokens_pattern, text)
+    # # First, split the chunk by ALL special tokens to prevent merges across them
+    # sub_chunks = re.split(special_tokens_pattern, text)
+    #
+    # for sub_chunk in sub_chunks:
+    #     if sub_chunk:
+    #         for match in regex_pattern.finditer(sub_chunk):
+    #             word_bytes = match.group(0).encode('utf-8')
+    #             word_counts[tuple(word_bytes)] += 1
+    # return word_counts
 
-    for sub_chunk in sub_chunks:
-        if sub_chunk:
-            for match in regex_pattern.finditer(sub_chunk):
-                word_bytes = match.group(0).encode('utf-8')
-                word_counts[tuple(word_bytes)] += 1
+    last_end = 0
+    # 注意: special_tokens_pattern 不能为空
+    if special_tokens_pattern:
+        for match in re.finditer(special_tokens_pattern, text):
+            # 处理上一个标记到当前标记之间的文本
+            sub_chunk = text[last_end:match.start()]
+            if sub_chunk:
+                for pretoken_match in regex_pattern.finditer(sub_chunk):
+                    word_bytes = pretoken_match.group(0).encode('utf-8')
+                    word_counts[tuple(word_bytes)] += 1
+            last_end = match.end()
+
+    # 处理最后一个标记到文本末尾的剩余部分
+    remaining_chunk = text[last_end:]
+    if remaining_chunk:
+        for pretoken_match in regex_pattern.finditer(remaining_chunk):
+            word_bytes = pretoken_match.group(0).encode('utf-8')
+            word_counts[tuple(word_bytes)] += 1
+
     return word_counts
 
 
@@ -129,6 +152,11 @@ def get_stats_from_word_counts(
             pair_stats[pair] += count
     return pair_stats
 
+
+def get_time_string():
+    """返回格式化的当前时间字符串，格式为 HH:MM:SS.mmm"""
+    now = datetime.datetime.now()
+    return now.strftime("%H:%M:%S.%f")[:-3]
 
 def merge_word_counts_and_update_stats(
         word_counts: CounterType[Tuple[int, ...]],
@@ -211,13 +239,20 @@ def train_bpe(
     """
     assert vocab_size >= 256 + len(special_tokens), "Vocab size is too small."
 
+    # 记录总体开始时间
+    start_total_time = time.time()
+    print(f"[{get_time_string()}] Starting BPE training in Python...")
+
     # --- 1. Vocabulary Initialization ---
+    print(f"[{get_time_string()}] Initializing vocabulary...")
     vocab: Dict[int, bytes] = {i: bytes([i]) for i in range(256)}
     for i, token_str in enumerate(special_tokens):
         vocab[256 + i] = token_str.encode('utf-8')
+    print(f"[{get_time_string()}] Initial vocabulary size: {len(vocab)}")
 
     # --- 2. Parallel Pre-tokenization ---
-    print("Starting parallel pre-tokenization to get word counts...")
+    pretok_start_time = time.time()
+    print(f"[{get_time_string()}] Starting parallel pre-tokenization to get word counts...")
     special_tokens_pattern = "|".join(re.escape(st) for st in special_tokens)
     doc_end_token = b"<|endoftext|>"
     num_processes = 16
@@ -225,7 +260,7 @@ def train_bpe(
     chunks_data = []
     with open(input_path, "rb") as f:
         boundaries = find_chunk_boundaries(f, num_processes, doc_end_token)
-        print(f"File split into {len(boundaries) - 1} chunks for {num_processes} processes.")
+        print(f"[{get_time_string()}] File split into {len(boundaries) - 1} chunks for {num_processes} processes.")
         for start, end in zip(boundaries, boundaries[1:]):
             if start < end:
                 f.seek(start)
@@ -237,55 +272,64 @@ def train_bpe(
         for res in results:
             word_counts.update(res)
 
-    print(f"Pre-tokenization complete. Found {len(word_counts)} unique 'words'.")
+    pretok_time = time.time() - pretok_start_time
+    print(f"[{get_time_string()}] Pre-tokenization complete in {pretok_time:.2f}s. Found {len(word_counts)} unique 'words'.")
 
-    # --- 3. BPE Training Loop (Optimized) ---
-    merges: List[Tuple[bytes, bytes]] = []
-    stats = get_stats_from_word_counts(word_counts)
+    # --- 3. BPE Training Loop---
+    bpe_start_time = time.time()
+    print(f"[{get_time_string()}] Starting BPE merge operations...")
 
-    num_merges_needed = vocab_size - len(vocab)
-    for i in range(num_merges_needed):
-        if not stats:
-            print("No more pairs to merge. Stopping early.")
-            break
+    if RUST_AVAILABLE:
+        print(f"[{get_time_string()}] Using Rust implementation...")
+        vocab, merges = train_bpe_with_rust(word_counts, vocab_size, vocab)
+    else:
+        print(f"[{get_time_string()}] Using Python implementation...")
+        merges: List[Tuple[bytes, bytes]] = []
 
-        max_freq = max(stats.values())
+        stats_start_time = time.time()
+        stats = get_stats_from_word_counts(word_counts)
+        print(f"[{get_time_string()}] Initial stats computation completed in {time.time() - stats_start_time:.2f}s")
 
-        if max_freq < 1:
-            print("Highest pair count is 0. Stopping early.")
-            break
+        num_merges_needed = vocab_size - len(vocab)
+        print(f"[{get_time_string()}] Need to perform {num_merges_needed} merges")
 
-        tied_pairs = [p for p, freq in stats.items() if freq == max_freq]
-        best_pair = max(tied_pairs, key=lambda p: (vocab[p[0]], vocab[p[1]]))
+        for i in range(num_merges_needed):
+            merge_start_time = time.time()
+            if not stats:
+                print(f"[{get_time_string()}] [{time.time() - bpe_start_time:.2f}s] No more pairs to merge. Stopping early.")
+                break
 
-        new_token_id = len(vocab)
-        token1_bytes = vocab[best_pair[0]]
-        token2_bytes = vocab[best_pair[1]]
-        vocab[new_token_id] = token1_bytes + token2_bytes
-        merges.append((token1_bytes, token2_bytes))
+            max_freq = max(stats.values())
 
-        if RUST_AVAILABLE:
-            # 调用 Rust 函数，它返回的是 (dict, dict)
-            new_counts_dict, delta_dict = merge_word_counts_and_update_stats_rust(
-                word_counts, best_pair, new_token_id
-            )
+            if max_freq < 1:
+                print(f"[{get_time_string()}] [{time.time() - bpe_start_time:.2f}s] Highest pair count is 0. Stopping early.")
+                break
 
-            # 我们需要将返回的 dict 转换为 Counter
-            word_counts = collections.Counter(new_counts_dict)
-            stats_delta = collections.Counter(delta_dict)
-        else:
+            tied_pairs = [p for p, freq in stats.items() if freq == max_freq]
+            best_pair = max(tied_pairs, key=lambda p: (vocab[p[0]], vocab[p[1]]))
+
+            new_token_id = len(vocab)
+            token1_bytes = vocab[best_pair[0]]
+            token2_bytes = vocab[best_pair[1]]
+            vocab[new_token_id] = token1_bytes + token2_bytes
+            merges.append((token1_bytes, token2_bytes))
             # 调用纯 Python 函数
             word_counts, stats_delta = merge_word_counts_and_update_stats(
                 word_counts, best_pair, new_token_id
             )
 
-        stats.update(stats_delta)
-        del stats[best_pair]
+            stats.update(stats_delta)
+            del stats[best_pair]
 
-        if (i + 1) % 100 == 0:
-            print(
-                f"Merge {i + 1}/{num_merges_needed}: {best_pair} -> {new_token_id} ({vocab[new_token_id]!r}) | Freq: {stats[max(stats, key=stats.get)] if stats else 0}")
+            merge_time = time.time() - merge_start_time
+            if (i + 1) % 100 == 0:
+                print(
+                    f"[{get_time_string()}] [{time.time() - bpe_start_time:.2f}s] Merge {i + 1}/{num_merges_needed}: {best_pair} -> {new_token_id} ({vocab[new_token_id]!r}) | Freq: {stats[max(stats, key=stats.get)] if stats else 0} | This merge: {merge_time:.4f}s")
 
+    total_time = time.time() - start_total_time
+    bpe_time = time.time() - bpe_start_time
+    print(f"[{get_time_string()}] BPE training completed in {bpe_time:.2f}s")
+    print(f"[{get_time_string()}] Total training time: {total_time:.2f}s")
     return vocab, merges
 
 
@@ -311,7 +355,7 @@ if __name__ == '__main__':
     input_file_path = "../data/TinyStoriesV2-GPT4-train.txt"
 
     # 2. Define training parameters.
-    TARGET_VOCAB_SIZE = 1000
+    TARGET_VOCAB_SIZE = 10000
     SPECIAL_TOKENS = ["<|endoftext|>"]
 
     print("\n--- Starting BPE Training ---")

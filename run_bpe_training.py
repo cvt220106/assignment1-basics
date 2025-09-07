@@ -9,15 +9,16 @@ from cs336_basics.bpe_tokenizer import train_bpe
 
 # --- 1. 配置 ---
 # !!! 重要: 请将此路径修改为您本地 TinyStories 数据集的实际路径 !!!
-# DATASET_PATH = 'data/TinyStoriesV2-GPT4-train.txt'
-# VOCAB_SIZE = 10000
-DATASET_PATH = 'data/owt_train.txt'
-VOCAB_SIZE = 32000
+DATASET_PATH = 'data/TinyStoriesV2-GPT4-train.txt'
+VOCAB_SIZE = 10000
+# DATASET_PATH = 'data/owt_train.txt'
+# VOCAB_SIZE = 32000
 SPECIAL_TOKENS = ["<|endoftext|>"]
 
 # 输出文件路径
 OUTPUT_DIR = "bpe_training_results"
-OUTPUT_VOCAB_PATH = os.path.join(OUTPUT_DIR, "vocab.json")
+PREFIX = DATASET_PATH.split("/")[-1].split(".")[0]
+OUTPUT_VOCAB_PATH = os.path.join(OUTPUT_DIR, f"{PREFIX}_vocab.json")
 OUTPUT_MERGES_PATH = os.path.join(OUTPUT_DIR, "merges.json")
 
 
